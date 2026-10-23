@@ -1,5 +1,5 @@
 -- Luau | supermarket_menu.lua | Roblox client | PC/keyboard + mouse/touch UI
--- Menu v1.14: esteira com cliques em sequencia e pendencias limitadas; pagamento preservado.
+-- Menu v1.15: interface ENG/PORT; ingles inicial, troca instantanea no cabecalho.
 -- Sem bibliotecas externas; nao envia RemoteEvents ou RemoteFunctions.
 
 local Players = game:GetService("Players")
@@ -30,7 +30,7 @@ local WIDTH, HEIGHT, HEADER = 464, 460, 72
 local MIN_SPEED, MAX_SPEED = 8, 100
 local state = {
     alive = true, minimized = false, capturing = false,
-    key = Enum.KeyCode.T, speed = 16, speedEnabled = false,
+    key = Enum.KeyCode.T, speed = 16, speedEnabled = false, language = "ENG",
     humanoid = nil, original = nil, lastApplied = nil,
     captureToken = 0, drag = nil, sliding = nil, reportOpen = false,
 }
@@ -38,6 +38,132 @@ local connections = {}
 local characterConnection
 local notice, refreshSpeed, refreshKey
 local autoController
+
+-- UI text keeps its Portuguese source so existing messages can be retranslated.
+-- Game object names, payment events and numeric values are never localized.
+local englishText = {
+    ["Movimento"] = "Movement",
+    ["Tecla e menu"] = "Key & menu",
+    ["Caixa e saldo"] = "Checkout & money",
+    ["T · ocultar / mostrar"] = "T · hide / show",
+    ["Pronto. Arraste pelo título."] = "Ready. Drag the title bar to move.",
+    ["Velocidade de movimento"] = "Movement speed",
+    ["Controle local · studs por segundo"] = "Local control · studs per second",
+    ["Valor escolhido"] = "Selected value",
+    ["Aguardando personagem…"] = "Waiting for character…",
+    ["Restaurar velocidade"] = "Restore speed",
+    ["O servidor pode corrigir o valor."] = "The server may override this value.",
+    ["Digite um número entre 8 e 100."] = "Enter a number between 8 and 100.",
+    ["Controle de velocidade desativado."] = "Speed control disabled.",
+    ["Controle local ativado; verifique a velocidade observada."] = "Local control enabled; check the observed speed.",
+    ["Controle desligado; valor anterior restaurado quando ainda aplicável."] = "Control disabled; previous speed restored where applicable.",
+    ["Ocultar e mostrar o painel"] = "Hide and show the panel",
+    ["Clique na tecla e pressione outra. Esc cancela."] = "Click the key, then press another. Esc cancels.",
+    ["Voltar para T"] = "Reset to T",
+    ["− recolhe o painel à barra de título.\n× oculta tudo; a tecla escolhida traz o painel de volta.\nO atalho fica suspenso enquanto você digita."] = "− collapses the panel to its title bar.\n× hides everything; your chosen key shows it again.\nThe shortcut is paused while you type.",
+    ["Encerrar script"] = "Unload script",
+    ["Remove o menu e desliga o controle."] = "Removes the menu and disables control.",
+    ["Pressione uma tecla…"] = "Press a key…",
+    ["Pressione a nova tecla. Esc cancela."] = "Press the new key. Esc cancels.",
+    ["Troca de tecla cancelada por tempo esgotado."] = "Key change timed out.",
+    ["Atalho restaurado para T."] = "Shortcut reset to T.",
+    ["Atendimento automático"] = "Automatic checkout",
+    ["DESLIGADO · F8 INTERROMPE"] = "OFF · F8 STOPS",
+    ["Ative no caixa com esteira e mão do NPC visíveis. Produtos e pagamento automáticos. F8 interrompe."] = "Enable at checkout with the belt and NPC hand visible. Automatic scanning and payment. F8 stops.",
+    ["Adicionar dinheiro"] = "Give money",
+    ["INDISPONÍVEL NESTA VERSÃO"] = "UNAVAILABLE IN THIS VERSION",
+    ["Não há uma operação de crédito identificada. Alterar um número local não comprova mudança no saldo salvo."] = "No credit operation identified. Changing a local number does not prove the saved balance changed.",
+    ["Gerar diagnóstico local"] = "Run local diagnostics",
+    ["Abra o caixa antes. O relatório abre neste painel."] = "Open checkout first. The report opens in this panel.",
+    ["Relatório do caixa"] = "Checkout report",
+    ["Voltar"] = "Back",
+    ["Selecione o texto, copie com Ctrl+C e cole no chat."] = "Select the text, copy with Ctrl+C and paste in chat.",
+    ["Selecionar tudo"] = "Select all",
+    ["Depois pressione Ctrl+C."] = "Then press Ctrl+C.",
+    ["Relatório aberto. Selecione, copie e envie no chat."] = "Report opened. Select, copy and send in chat.",
+    ["Texto selecionado. Pressione Ctrl+C para copiar."] = "Text selected. Press Ctrl+C to copy.",
+    ["Relatório fechado. Gere novamente para atualizar os dados."] = "Report closed. Run again to refresh the data.",
+    ["Só nomes e textos replicados; nenhum evento foi disparado."] = "Replicated names and text only; no event was fired.",
+    ["--- Eventos em ReplicatedStorage (máximo 250) ---"] = "--- Events in ReplicatedStorage (up to 250) ---",
+    ["--- Textos do caixa no PlayerGui (máximo 80) ---"] = "--- Checkout text in PlayerGui (up to 80) ---",
+    ["--- FIM DO RELATÓRIO ---"] = "--- END OF REPORT ---",
+    ["Falha no diagnóstico. Copie a mensagem exibida."] = "Diagnostics failed. Copy the displayed message.",
+    ["Pausado para abrir o menu."] = "Paused to open the menu.",
+    ["Roblox perdeu o foco."] = "Roblox lost focus.",
+    ["F8 está reservado para interromper o atendimento."] = "F8 is reserved for stopping automatic checkout.",
+    ["Troca de tecla cancelada."] = "Key change cancelled.",
+    ["Menu encerrado."] = "Menu unloaded.",
+    ["Atendimento pausado."] = "Checkout paused.",
+    ["Feche o chat ou menu do Roblox para continuar."] = "Close Roblox chat or menu to continue.",
+    ["O jogador saiu do caixa."] = "You left checkout.",
+    ["Caixa removido."] = "Checkout desk removed.",
+    ["Jogador distante do caixa selecionado."] = "You are too far from the selected checkout.",
+    ["Mouse livre; continuando o pagamento."] = "Mouse released; continuing payment.",
+    ["Pagamento aguardando você soltar o mouse e parar de clicar."] = "Payment is waiting for you to release the mouse and stop clicking.",
+    ["Controle fora da área clicável da tela."] = "Control is outside the clickable screen area.",
+    ["Botão esperado não está disponível."] = "The expected button is unavailable.",
+    ["Interface de pagamento não abriu."] = "Payment interface did not open.",
+    ["O pagamento mudou durante o atendimento."] = "Payment changed during checkout.",
+    ["O teclado do cartão não foi zerado."] = "The card keypad was not cleared.",
+    ["Pagamento alterado durante a digitação."] = "Payment changed while entering the amount.",
+    ["O valor exibido no cartão não corresponde ao total."] = "The amount shown on the card terminal does not match the total.",
+    ["Troco exige mais de 80 cliques; conclua manualmente."] = "Change requires more than 80 clicks; finish manually.",
+    ["Não foi possível representar o troco."] = "Unable to make the required change.",
+    ["Pagamento alterado durante o troco."] = "Payment changed while giving change.",
+    ["Pagamento mudou antes da confirmação."] = "Payment changed before confirmation.",
+    ["A interface não encerrou o pagamento. Confira o caixa manualmente."] = "The payment interface did not close. Check checkout manually.",
+    ["Interface de pagamento fechada; aguardando próximo cliente."] = "Payment interface closed; waiting for the next customer.",
+    ["Assuma o caixa antes de ativar."] = "Take control of checkout before enabling.",
+    ["Conclua o pagamento atual; ative antes da próxima venda."] = "Finish the current payment; enable before the next sale.",
+    ["Detector do caixa não encontrado próximo ao jogador."] = "No checkout detector found nearby.",
+    ["Entrada virtual indisponível neste ambiente."] = "Virtual input is unavailable in this environment.",
+    ["Pagamento recebido com valores não reconhecidos."] = "Received payment with unrecognized amounts.",
+    ["Novo pagamento durante uma operação; confira o caixa."] = "New payment during an operation; check checkout.",
+    ["Atendimento completo ligado. Deixe esteira e mão do NPC visíveis e solte o mouse. F8 pausa."] = "Auto checkout enabled. Keep the belt and NPC hand visible and release the mouse. F8 pauses.",
+    ["Atendimento desligado."] = "Checkout disabled.",
+    ["Atendimento interrompido por F8."] = "Checkout stopped by F8.",
+}
+local textBindings = {}
+local dynamicText = {
+    { "^(%w+) · ocultar / mostrar$", "%1 · hide / show" },
+    { "^Novo atalho: (.+)%.$", "New shortcut: %1." },
+    { "^WalkSpeed observado: (.+) · alterado pelo jogo$", "Observed WalkSpeed: %1 · changed by the game" },
+    { "^WalkSpeed observado: (.+)$", "Observed WalkSpeed: %1" },
+    { "^Cartão: preenchendo %$(.+)$", "Card: entering $%1" },
+    { "^Dinheiro: total %$(.-); recebido %$(.-); troco %$(.-) %((%d+) cliques%)%.$", "Cash: total $%1; paid $%2; change $%3 (%4 clicks)." },
+    { "^Clique não confirmado em (.-)%. Confira se há uma janela sobre o caixa%.$", "Click not confirmed on %1. Check for a window covering checkout." },
+    { "^Clicando no pagamento oferecido: (.+)$", "Clicking the offered payment: %1" },
+    { "^Produto registrado: (.+)$", "Product scanned: %1" },
+    { "^Diagnóstico local v1%.1 — (.+)$", "Local diagnostics v1.1 — %1" },
+    { "^Total de eventos encontrados: (%d+)$", "Total events found: %1" },
+}
+local function translate(text)
+    if state.language == "PORT" then
+        if text == "ON" then return "LIG" end
+        if text == "OFF" then return "DESL" end
+        return text
+    end
+    if englishText[text] then return englishText[text] end
+    for _, rule in ipairs(dynamicText) do
+        local translated, count = text:gsub(rule[1], rule[2])
+        if count > 0 then return translated end
+    end
+    -- Preserve executor error details while translating our own error prefix.
+    for _, prefix in ipairs({
+        { "Falha ao iniciar: ", "Failed to start: " },
+        { "Entrada virtual recusada: ", "Virtual input rejected: " },
+        { "Falha ao gerar diagnóstico: ", "Diagnostics failed: " },
+    }) do
+        if text:sub(1, #prefix[1]) == prefix[1] then
+            return prefix[2] .. translate(text:sub(#prefix[1] + 1))
+        end
+    end
+    return text
+end
+local function setText(object, source)
+    textBindings[object] = source
+    object.Text = translate(source)
+end
 
 local function connect(signal, callback)
     local connection = signal:Connect(callback)
@@ -57,13 +183,15 @@ local function round(object, radius)
 end
 
 local function label(parent, text, x, y, width, height, size, color)
-    return new("TextLabel", {
+    local object = new("TextLabel", {
         BackgroundTransparency = 1, Position = UDim2.fromOffset(x, y),
         Size = UDim2.fromOffset(width, height), Text = text,
         Font = Enum.Font.Gotham, TextSize = size or 14,
         TextColor3 = color or C.text, TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Center, TextWrapped = true,
     }, parent)
+    setText(object, text)
+    return object
 end
 
 local function button(parent, text, x, y, width, height, color)
@@ -74,6 +202,7 @@ local function button(parent, text, x, y, width, height, color)
         Font = Enum.Font.GothamMedium, AutoButtonColor = true,
     }, parent)
     round(object, 8)
+    setText(object, text)
     return object
 end
 
@@ -96,12 +225,14 @@ local scale = new("UIScale", { Scale = 1 }, panel)
 
 local dragArea = new("TextButton", {
     Name = "DragHeader", BackgroundTransparency = 1,
-    Position = UDim2.fromOffset(0, 0), Size = UDim2.fromOffset(WIDTH - 96, HEADER),
+    Position = UDim2.fromOffset(0, 0), Size = UDim2.fromOffset(WIDTH - 160, HEADER),
     Text = "", AutoButtonColor = false,
 }, panel)
-local brand = label(dragArea, "ZYON  /  SUPERMARKET", 20, 14, 320, 24, 16)
+local brand = label(dragArea, "ZYON  /  SUPERMARKET", 20, 14, 276, 24, 14)
 brand.Font = Enum.Font.GothamBold
-local keyHint = label(dragArea, "T · ocultar / mostrar", 20, 39, 320, 18, 11, C.muted)
+local keyHint = label(dragArea, "T · ocultar / mostrar", 20, 39, 276, 18, 11, C.muted)
+local languageButton = button(panel, "ENG", WIDTH - 160, 19, 64, 32)
+languageButton.Name = "LanguageToggle"
 local minimize = button(panel, "−", WIDTH - 88, 19, 32, 32)
 local hide = button(panel, "×", WIDTH - 48, 19, 32, 32)
 local tabsBar = new("Frame", {
@@ -115,7 +246,7 @@ local body = new("Frame", {
 local footer = label(panel, "Pronto. Arraste pelo título.", 20, HEIGHT - 38, WIDTH - 40, 26, 11, C.muted)
 
 notice = function(text)
-    if state.alive then footer.Text = text end
+    if state.alive then setText(footer, text) end
 end
 
 local pages, tabs = {}, {}
@@ -208,7 +339,7 @@ refreshSpeed = function()
     fill.Size = UDim2.fromScale(ratio, 1)
     thumb.Position = UDim2.fromScale(ratio, 0.5)
     if UIS:GetFocusedTextBox() ~= speedValue then speedValue.Text = tostring(state.speed) end
-    toggle.Text = state.speedEnabled and "ON" or "OFF"
+    setText(toggle, state.speedEnabled and "ON" or "OFF")
     toggle.BackgroundColor3 = state.speedEnabled and C.accent or C.input
     toggle.TextColor3 = state.speedEnabled and C.dark or C.muted
 end
@@ -260,8 +391,8 @@ local unload = button(settings, "Encerrar script", 0, 234, 206, 36)
 label(settings, "Remove o menu e desliga o controle.", 220, 231, 204, 42, 11, C.muted)
 
 refreshKey = function()
-    keyButton.Text = state.capturing and "Pressione uma tecla…" or state.key.Name
-    keyHint.Text = state.key.Name .. " · ocultar / mostrar"
+    setText(keyButton, state.capturing and "Pressione uma tecla…" or state.key.Name)
+    setText(keyHint, state.key.Name .. " · ocultar / mostrar")
 end
 local function cancelCapture()
     state.capturing = false
@@ -295,7 +426,7 @@ local autoToggle = button(cashierCard, "OFF", 344, 10, 64, 30)
 local autoStatus = label(cashierCard, "DESLIGADO · F8 INTERROMPE", 16, 38, 390, 18, 10, C.amber)
 label(cashierCard, "Ative no caixa com esteira e mão do NPC visíveis. Produtos e pagamento automáticos. F8 interrompe.", 16, 59, 390, 33, 11, C.muted)
 local moneyCard = card(integration, 110, 98)
-label(moneyCard, "Give money", 16, 10, 390, 25, 15)
+label(moneyCard, "Adicionar dinheiro", 16, 10, 390, 25, 15)
 label(moneyCard, "INDISPONÍVEL NESTA VERSÃO", 16, 36, 390, 18, 10, C.amber)
 label(moneyCard, "Não há uma operação de crédito identificada. Alterar um número local não comprova mudança no saldo salvo.", 16, 57, 390, 33, 11, C.muted)
 local diagnose = button(integration, "Gerar diagnóstico local", 0, 234, 206, 36)
@@ -330,17 +461,28 @@ local selectReport = button(reportPanel, "Selecionar tudo", 0, 294, 206, 36, C.a
 selectReport.TextColor3 = C.dark
 label(reportPanel, "Depois pressione Ctrl+C.", 220, 291, 204, 42, 11, C.muted)
 local lastReport = ""
+local function renderReport()
+    local rendered = {}
+    for line in (lastReport .. "\n"):gmatch("(.-)\n") do
+        if line:sub(1, 7) == "[Zyon] " then
+            table.insert(rendered, "[Zyon] " .. translate(line:sub(8)))
+        else
+            table.insert(rendered, translate(line))
+        end
+    end
+    reportText.Text = table.concat(rendered, "\n")
+end
 
 local function showReport(text)
     lastReport = text
-    reportText.Text = text
+    renderReport()
     reportScroll.CanvasPosition = Vector2.new(0, 0)
     state.reportOpen = true
     reportPanel.Visible = true
     notice("Relatório aberto. Selecione, copie e envie no chat.")
 end
 connect(selectReport.Activated, function()
-    reportText.Text = lastReport
+    renderReport()
     reportText:CaptureFocus()
     task.defer(function()
         if state.alive and state.reportOpen and reportText:IsFocused() then
@@ -352,7 +494,7 @@ connect(selectReport.Activated, function()
 end)
 connect(reportText.FocusLost, function()
     -- Restaura o relatorio caso alguma tecla tenha alterado o campo de copia.
-    if state.alive then reportText.Text = lastReport end
+    if state.alive then renderReport() end
 end)
 connect(closeReport.Activated, function()
     reportText:ReleaseFocus()
@@ -459,7 +601,7 @@ connect(minimize.Activated, function()
     body.Visible = not state.minimized
     footer.Visible = not state.minimized
     reportPanel.Visible = not state.minimized and state.reportOpen
-    minimize.Text = state.minimized and "+" or "−"
+    setText(minimize, state.minimized and "+" or "−")
     clampPanel()
 end)
 
@@ -569,13 +711,13 @@ connect(RunService.Heartbeat, function(dt)
     elapsed = 0
     local humanoid = state.humanoid
     if not humanoid or not humanoid.Parent then
-        liveSpeed.Text = "Aguardando personagem…"
+        setText(liveSpeed, "Aguardando personagem…")
         liveSpeed.TextColor3 = C.muted
         return
     end
     local observed = humanoid.WalkSpeed
     local changed = state.speedEnabled and math.abs(observed - state.speed) > 0.1
-    liveSpeed.Text = string.format("WalkSpeed observado: %.1f%s", observed, changed and " · alterado pelo jogo" or "")
+    setText(liveSpeed, string.format("WalkSpeed observado: %.1f%s", observed, changed and " · alterado pelo jogo" or ""))
     liveSpeed.TextColor3 = changed and C.amber or C.muted
 end)
 connect(screen:GetPropertyChangedSignal("AbsoluteSize"), resize)
@@ -587,6 +729,7 @@ connect(gui.Destroying, function()
     if characterConnection then characterConnection:Disconnect() end
     for _, connection in ipairs(connections) do connection:Disconnect() end
     table.clear(connections)
+    table.clear(textBindings)
 end)
 
 -- Controller inserted into the menu after its UI and lifecycle handlers exist.
@@ -623,12 +766,12 @@ autoController = (function()
     local function report(message)
         if lastStatus == message then return end
         lastStatus = message
-        if state.alive then autoStatus.Text = message; notice(message) end
-        print("[ZyonAuto] " .. message)
+        if state.alive then setText(autoStatus, message); notice(message) end
+        print("[ZyonAuto] " .. translate(message))
     end
 
     local function paint()
-        autoToggle.Text = active and "ON" or "OFF"
+        setText(autoToggle, active and "ON" or "OFF")
         autoToggle.BackgroundColor3 = active and C.accent or C.input
         autoToggle.TextColor3 = active and C.dark or C.muted
     end
@@ -1125,6 +1268,15 @@ autoController = (function()
 end)()
 
 
+connect(languageButton.Activated, function()
+    state.language = state.language == "ENG" and "PORT" or "ENG"
+    for object, source in pairs(textBindings) do
+        if object.Parent then object.Text = translate(source) end
+    end
+    setText(languageButton, state.language)
+    renderReport()
+end)
+
 if player.Character then bindCharacter(player.Character) end
 if state.humanoid then
     state.speed = math.clamp(math.floor(state.humanoid.WalkSpeed + 0.5), MIN_SPEED, MAX_SPEED)
@@ -1134,4 +1286,4 @@ refreshSpeed()
 refreshKey()
 resize()
 task.defer(function() if state.alive then resize() end end)
-print("[Zyon] Menu v1.14 carregado. Esteira rápida com até 3 cliques pendentes. F8 interrompe.")
+print("[Zyon] Menu v1.15 loaded. ENG/PORT language toggle. F8 stops automatic checkout.")
