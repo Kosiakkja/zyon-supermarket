@@ -1,5 +1,5 @@
 -- Luau | supermarket_menu.lua | Roblox client | PC/keyboard + mouse/touch UI
--- Menu v1.16: pausa por foco/chat com retomada; pagamento interrompido reinicia antes da confirmacao.
+-- Menu v1.17: atendimento em segundo plano opcional, indicadores de foco e respostas; Auto Stock retirado.
 -- Sem bibliotecas externas; nao envia RemoteEvents ou RemoteFunctions.
 
 local Players = game:GetService("Players")
@@ -30,7 +30,7 @@ local WIDTH, HEIGHT, HEADER = 464, 460, 72
 local MIN_SPEED, MAX_SPEED = 8, 100
 local state = {
     alive = true, minimized = false, capturing = false,
-    key = Enum.KeyCode.T, speed = 16, speedEnabled = false, language = "ENG", windowFocused = true,
+    key = Enum.KeyCode.T, speed = 16, speedEnabled = false, language = "ENG", windowFocused = true, backgroundEnabled = true,
     humanoid = nil, original = nil, lastApplied = nil,
     captureToken = 0, drag = nil, sliding = nil, reportOpen = false,
 }
@@ -42,6 +42,20 @@ local autoController
 -- UI text keeps its Portuguese source so existing messages can be retranslated.
 -- Game object names, payment events and numeric values are never localized.
 local englishText = {
+    ["PAUSADO · CHAT/MENU"] = "PAUSED · CHAT/MENU",
+    ["Execução em segundo plano"] = "Background operation",
+    ["ATENDIMENTO DESLIGADO"] = "CHECKOUT OFF",
+    ["EM EXECUÇÃO · ROBLOX EM FOCO"] = "RUNNING · ROBLOX FOCUSED",
+    ["EM EXECUÇÃO · SEM FOCO"] = "RUNNING · ROBLOX UNFOCUSED",
+    ["PAUSADO · ENTRADA SEM FOCO RECUSADA"] = "PAUSED · UNFOCUSED INPUT NOT ACCEPTED",
+    ["PAUSADO · SEGUNDO PLANO DESLIGADO"] = "PAUSED · BACKGROUND DISABLED",
+    ["Configuração na aba Tecla e menu. Versão 1.17."] = "Configure in Key & menu. Version 1.17.",
+    ["Segundo plano: LIG"] = "Background: ON",
+    ["Segundo plano: DESL"] = "Background: OFF",
+    ["Experimental: depende da entrada virtual sem foco."] = "Experimental: requires virtual input without focus.",
+    ["Segundo plano ligado. Teste o atendimento fora do Roblox."] = "Background enabled. Test checkout while Roblox is unfocused.",
+    ["Segundo plano desligado; Alt+Tab pausa o atendimento."] = "Background disabled; Alt+Tab pauses checkout.",
+    ["Entrada sem foco não confirmada; volte ao Roblox para retomar."] = "Unfocused input was not confirmed; return to Roblox to resume.",
     ["Pausado: volte ao Roblox e feche o chat/menu para retomar."] = "Paused: return to Roblox and close chat/menu to resume.",
     ["Foco recuperado; retomando atendimento."] = "Focus restored; resuming checkout.",
     ["Retomando: limpando e preenchendo o pagamento novamente."] = "Resuming: clearing and entering the payment again.",
@@ -49,7 +63,7 @@ local englishText = {
     ["Confirmação interrompida sem resposta; confira o caixa antes de reativar."] = "Confirmation was interrupted without a response; check checkout before enabling again.",
     ["Movimento"] = "Movement",
     ["Tecla e menu"] = "Key & menu",
-    ["Caixa e saldo"] = "Checkout & money",
+    ["Caixa"] = "Checkout",
     ["T · ocultar / mostrar"] = "T · hide / show",
     ["Pronto. Arraste pelo título."] = "Ready. Drag the title bar to move.",
     ["Velocidade de movimento"] = "Movement speed",
@@ -130,6 +144,7 @@ local englishText = {
 }
 local textBindings = {}
 local dynamicText = {
+    { "^Sem foco: (%d+) tentativas; (%d+) produtos registrados%.$", "Unfocused: %1 attempts; %2 products registered." },
     { "^(%w+) · ocultar / mostrar$", "%1 · hide / show" },
     { "^Novo atalho: (.+)%.$", "New shortcut: %1." },
     { "^WalkSpeed observado: (.+) · alterado pelo jogo$", "Observed WalkSpeed: %1 · changed by the game" },
@@ -266,7 +281,7 @@ local function selectTab(name)
     state.captureToken = state.captureToken + 1
     if refreshKey then refreshKey() end
 end
-for index, name in ipairs({ "Movimento", "Tecla e menu", "Caixa e saldo" }) do
+for index, name in ipairs({ "Movimento", "Tecla e menu", "Caixa" }) do
     local tab = button(tabsBar, name, (index - 1) * 144, 0, 136, 36)
     tabs[name] = tab
     pages[name] = new("Frame", {
@@ -391,7 +406,20 @@ label(keyCard, "Ocultar e mostrar o painel", 16, 12, 390, 26, 15)
 label(keyCard, "Clique na tecla e pressione outra. Esc cancela.", 16, 42, 390, 24, 12, C.muted)
 local keyButton = button(keyCard, "T", 16, 78, 150, 32)
 local resetKey = button(keyCard, "Voltar para T", 182, 78, 226, 32)
-label(settings, "− recolhe o painel à barra de título.\n× oculta tudo; a tecla escolhida traz o painel de volta.\nO atalho fica suspenso enquanto você digita.", 0, 139, 424, 70, 12, C.muted)
+label(settings, "− recolhe o painel à barra de título.\n× oculta tudo; a tecla escolhida traz o painel de volta.\nO atalho fica suspenso enquanto você digita.", 0, 128, 424, 48, 11, C.muted)
+local backgroundButton = button(settings, "Segundo plano: LIG", 0, 184, 206, 36)
+label(settings, "Experimental: depende da entrada virtual sem foco.", 220, 181, 204, 42, 11, C.muted)
+connect(backgroundButton.Activated, function()
+    state.backgroundEnabled = not state.backgroundEnabled
+    setText(backgroundButton, state.backgroundEnabled and "Segundo plano: LIG" or "Segundo plano: DESL")
+    backgroundButton.BackgroundColor3 = state.backgroundEnabled and C.accent or C.input
+    backgroundButton.TextColor3 = state.backgroundEnabled and C.dark or C.muted
+    if autoController then autoController.inputChanged() end
+    notice(state.backgroundEnabled and "Segundo plano ligado. Teste o atendimento fora do Roblox."
+        or "Segundo plano desligado; Alt+Tab pausa o atendimento.")
+end)
+backgroundButton.BackgroundColor3 = C.accent
+backgroundButton.TextColor3 = C.dark
 local unload = button(settings, "Encerrar script", 0, 234, 206, 36)
 label(settings, "Remove o menu e desliga o controle.", 220, 231, 204, 42, 11, C.muted)
 
@@ -424,16 +452,17 @@ connect(resetKey.Activated, function()
 end)
 connect(unload.Activated, function() gui:Destroy() end)
 
-local integration = pages["Caixa e saldo"]
+local integration = pages["Caixa"]
 local cashierCard = card(integration, 0, 98)
 label(cashierCard, "Atendimento automático", 16, 10, 280, 25, 15)
 local autoToggle = button(cashierCard, "OFF", 344, 10, 64, 30)
 local autoStatus = label(cashierCard, "DESLIGADO · F8 INTERROMPE", 16, 38, 390, 18, 10, C.amber)
 label(cashierCard, "Ative no caixa com esteira e mão do NPC visíveis. Produtos e pagamento automáticos. F8 interrompe.", 16, 59, 390, 33, 11, C.muted)
-local moneyCard = card(integration, 110, 98)
-label(moneyCard, "Adicionar dinheiro", 16, 10, 390, 25, 15)
-label(moneyCard, "INDISPONÍVEL NESTA VERSÃO", 16, 36, 390, 18, 10, C.amber)
-label(moneyCard, "Não há uma operação de crédito identificada. Alterar um número local não comprova mudança no saldo salvo.", 16, 57, 390, 33, 11, C.muted)
+local backgroundCard = card(integration, 110, 98)
+label(backgroundCard, "Execução em segundo plano", 16, 10, 310, 25, 15)
+label(backgroundCard, "v1.17", 352, 10, 56, 25, 11, C.accent)
+local backgroundStatus = label(backgroundCard, "ATENDIMENTO DESLIGADO", 16, 38, 390, 18, 10, C.amber)
+local backgroundDetail = label(backgroundCard, "Configuração na aba Tecla e menu. Versão 1.17.", 16, 59, 390, 33, 11, C.muted)
 local diagnose = button(integration, "Gerar diagnóstico local", 0, 234, 206, 36)
 label(integration, "Abra o caixa antes. O relatório abre neste painel.", 220, 231, 204, 42, 11, C.muted)
 
@@ -769,6 +798,8 @@ autoController = (function()
     local pausedTotal = 0
     local resumeAt = 0
     local paymentAttempt
+    local backgroundBlocked = false
+    local backgroundAttempts, backgroundScans = 0, 0
     local RETRY_PAYMENT = {} -- Private sentinel, never an ordinary game/executor error.
     local function observeManualClick(input, released)
         if not active or input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
@@ -792,6 +823,16 @@ autoController = (function()
         setText(autoToggle, active and "ON" or "OFF")
         autoToggle.BackgroundColor3 = active and C.accent or C.input
         autoToggle.TextColor3 = active and C.dark or C.muted
+        local status = "ATENDIMENTO DESLIGADO"
+        if active then
+            if UIS:GetFocusedTextBox() or GuiService.MenuIsOpen then status = "PAUSADO · CHAT/MENU"
+            elseif state.windowFocused then status = "EM EXECUÇÃO · ROBLOX EM FOCO"
+            elseif backgroundBlocked then status = "PAUSADO · ENTRADA SEM FOCO RECUSADA"
+            elseif state.backgroundEnabled then status = "EM EXECUÇÃO · SEM FOCO"
+            else status = "PAUSADO · SEGUNDO PLANO DESLIGADO" end
+        end
+        setText(backgroundStatus, status)
+        setText(backgroundDetail, string.format("Sem foco: %d tentativas; %d produtos registrados.", backgroundAttempts, backgroundScans))
     end
 
     local function stop(message, show)
@@ -835,7 +876,8 @@ autoController = (function()
     end
 
     local function inputBlocked()
-        return not state.windowFocused or UIS:GetFocusedTextBox() ~= nil or GuiService.MenuIsOpen
+        return (not state.windowFocused and (not state.backgroundEnabled or backgroundBlocked))
+            or UIS:GetFocusedTextBox() ~= nil or GuiService.MenuIsOpen
     end
 
     local function syncPause()
@@ -853,8 +895,15 @@ autoController = (function()
     end
 
     local function inputChanged()
+        if state.windowFocused then backgroundBlocked = false end
         if not inputBlocked() then resumeAt = os.clock() + 0.25 end
         syncPause()
+        paint()
+        if active then
+            print(string.format("[ZyonFocus] v1.17 focus=%s background=%s driver=%s attempts=%d scans=%d blocked=%s",
+                tostring(state.windowFocused), tostring(state.backgroundEnabled), tostring(driverKind),
+                backgroundAttempts, backgroundScans, tostring(backgroundBlocked)))
+        end
     end
     connect(UIS.TextBoxFocused, inputChanged)
     connect(UIS.TextBoxFocusReleased, inputChanged)
@@ -875,7 +924,8 @@ autoController = (function()
             syncPause()
             if not pauseStarted then break end
             if not waited then
-                report("Pausado: volte ao Roblox e feche o chat/menu para retomar.")
+                report(backgroundBlocked and "Entrada sem foco não confirmada; volte ao Roblox para retomar."
+                    or "Pausado: volte ao Roblox e feche o chat/menu para retomar.")
                 waited = true
             end
             task.wait(0.05)
@@ -898,6 +948,10 @@ autoController = (function()
     end
 
     local function sendButton(position, down)
+        if down and not state.windowFocused then
+            backgroundAttempts = backgroundAttempts + 1
+            paint()
+        end
         if driverKind == "VirtualInput" then
             driver:SendMouseButton(position, Enum.UserInputType.MouseButton1, down, 0)
         else
@@ -915,8 +969,8 @@ autoController = (function()
 
     local function mouseIdle()
         return not inputBlocked() and os.clock() >= resumeAt
-            and not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
-            and os.clock() - lastManualClick >= 0.6
+            and (not state.windowFocused or (not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+                and os.clock() - lastManualClick >= 0.6))
     end
 
     local function waitForMouseIdle(token)
@@ -943,7 +997,7 @@ autoController = (function()
     local function press(position, token, timing, beforeDown)
         timing = timing or FAST_CLICK
         if check(token) then return false end
-        if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+        if state.windowFocused and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
             return false -- A manual press won the race: yield without disabling the cashier.
         end
         local camera = workspace.CurrentCamera
@@ -973,6 +1027,13 @@ autoController = (function()
         if not ok then
             releaseHeldClick(clickHandle)
             if generation == token then injectingMouse = false end
+            if not state.windowFocused and state.backgroundEnabled then
+                backgroundBlocked = true
+                paint()
+                syncPause()
+                check(token)
+                if not paymentAttempt then return false end
+            end
             error("Entrada virtual recusada: " .. tostring(reason), 0)
         end
         if generation == token then injectingMouse = false end
@@ -1009,6 +1070,12 @@ autoController = (function()
                 end
                 check(token)
                 if not activated then
+                    if not state.windowFocused and state.backgroundEnabled then
+                        backgroundBlocked = true
+                        paint()
+                        syncPause()
+                        check(token) -- Editing restarts after focus returns; an OK is not repeated.
+                    end
                     local current = paymentAttempt and paymentAttempt.current
                     local frame = current and at(paymentGui, "PaymentMethod", current.kind == "Cash" and "CashFrame" or "CardFrame")
                     if confirmation and frame and not shown(frame) then return true end
@@ -1155,9 +1222,22 @@ autoController = (function()
     local SCAN_INTERVAL = 0.12
     local SCAN_RESPONSE_TIMEOUT = 0.65
     local MAX_PENDING_SCANS = 3
-    local function movePointer(position)
-        if driverKind == "VirtualInput" then driver:SendMousePosition(position)
-        else driver:SendMouseMoveEvent(position.X, position.Y, game) end
+    local function movePointer(position, token)
+        local ok, reason = pcall(function()
+            if driverKind == "VirtualInput" then driver:SendMousePosition(position)
+            else driver:SendMouseMoveEvent(position.X, position.Y, game) end
+        end)
+        if not ok then
+            if not state.windowFocused and state.backgroundEnabled then
+                backgroundBlocked = true
+                paint()
+                syncPause()
+                check(token)
+                return false
+            end
+            error("Entrada virtual recusada: " .. tostring(reason), 0)
+        end
+        return true
     end
 
     local function clickWorldPart(part, token, allowedModel)
@@ -1182,7 +1262,7 @@ autoController = (function()
                 and point.X < size.X - 2 and point.Y < size.Y - 2 then
                 local position = Vector2.new(point.X, point.Y)
                 local hoverEpoch = interruptionEpoch
-                movePointer(position)
+                if not movePointer(position, token) then return false end
                 -- Let the game update Mouse.Target and hover handlers before pressing.
                 task.wait(isProductDetector and 0.025 or 0.08)
                 if check(token) then return false end
@@ -1326,6 +1406,8 @@ autoController = (function()
         generation = generation + 1
         local token = generation
         active = true
+        backgroundBlocked = false
+        backgroundAttempts, backgroundScans = 0, 0
         transaction = nil
         eventSerial = 0
         scanSerial, scanMisses, nextScanAt = 0, 0, 0
@@ -1336,6 +1418,10 @@ autoController = (function()
             if not active then return end
             eventSerial = eventSerial + 1
             scanSerial = scanSerial + 1
+            if not state.windowFocused then
+                backgroundScans = backgroundScans + 1
+                paint()
+            end
             scanMisses = 0
             -- Events have no click ID; this bounds activity, not per-click attribution.
             if pendingScans[1] then table.remove(pendingScans, 1) end
@@ -1412,4 +1498,4 @@ refreshSpeed()
 refreshKey()
 resize()
 task.defer(function() if state.alive then resize() end end)
-print("[Zyon] Menu v1.16 loaded. Chat/focus auto-pause and resume. F8 stops automatic checkout.")
+print("[Zyon] Menu v1.17 loaded. Background ON (experimental). F8 stops. Auto Stock removed.")
