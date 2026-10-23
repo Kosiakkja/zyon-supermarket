@@ -1,5 +1,5 @@
 -- Luau | supermarket_menu.lua | Roblox client | PC/keyboard + mouse/touch UI
--- Menu v1.15: interface ENG/PORT; ingles inicial, troca instantanea no cabecalho.
+-- Menu v1.16: pausa por foco/chat com retomada; pagamento interrompido reinicia antes da confirmacao.
 -- Sem bibliotecas externas; nao envia RemoteEvents ou RemoteFunctions.
 
 local Players = game:GetService("Players")
@@ -30,7 +30,7 @@ local WIDTH, HEIGHT, HEADER = 464, 460, 72
 local MIN_SPEED, MAX_SPEED = 8, 100
 local state = {
     alive = true, minimized = false, capturing = false,
-    key = Enum.KeyCode.T, speed = 16, speedEnabled = false, language = "ENG",
+    key = Enum.KeyCode.T, speed = 16, speedEnabled = false, language = "ENG", windowFocused = true,
     humanoid = nil, original = nil, lastApplied = nil,
     captureToken = 0, drag = nil, sliding = nil, reportOpen = false,
 }
@@ -42,6 +42,11 @@ local autoController
 -- UI text keeps its Portuguese source so existing messages can be retranslated.
 -- Game object names, payment events and numeric values are never localized.
 local englishText = {
+    ["Pausado: volte ao Roblox e feche o chat/menu para retomar."] = "Paused: return to Roblox and close chat/menu to resume.",
+    ["Foco recuperado; retomando atendimento."] = "Focus restored; resuming checkout.",
+    ["Retomando: limpando e preenchendo o pagamento novamente."] = "Resuming: clearing and entering the payment again.",
+    ["O pagamento mudou durante a pausa. Confira o caixa."] = "Payment changed while paused. Check checkout.",
+    ["Confirmação interrompida sem resposta; confira o caixa antes de reativar."] = "Confirmation was interrupted without a response; check checkout before enabling again.",
     ["Movimento"] = "Movement",
     ["Tecla e menu"] = "Key & menu",
     ["Caixa e saldo"] = "Checkout & money",
@@ -647,9 +652,14 @@ connect(UIS.InputEnded, function(input)
     if state.sliding == input then state.sliding = nil end
 end)
 connect(UIS.WindowFocusReleased, function()
-    if autoController and autoController.running() then autoController.stop("Roblox perdeu o foco.") end
+    state.windowFocused = false
+    if autoController then autoController.inputChanged() end
     state.drag, state.sliding = nil, nil
     cancelCapture()
+end)
+connect(UIS.WindowFocused, function()
+    state.windowFocused = true
+    if autoController then autoController.inputChanged() end
 end)
 connect(UIS.InputBegan, function(input)
     if input.UserInputType ~= Enum.UserInputType.Keyboard or UIS:GetFocusedTextBox() then return end
@@ -752,6 +762,14 @@ autoController = (function()
     local lastManualClick = -math.huge
     local injectingMouse = false
     local syntheticReleaseSeen = false
+    local heldClick
+    local releaseHeldClick
+    local interruptionEpoch = 0
+    local pauseStarted
+    local pausedTotal = 0
+    local resumeAt = 0
+    local paymentAttempt
+    local RETRY_PAYMENT = {} -- Private sentinel, never an ordinary game/executor error.
     local function observeManualClick(input, released)
         if not active or input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
         if injectingMouse then
@@ -782,6 +800,7 @@ autoController = (function()
         generation = generation + 1
         transaction = nil
         table.clear(pendingScans)
+        if releaseHeldClick then releaseHeldClick() end
         for _, connection in ipairs(paymentConnections) do connection:Disconnect() end
         table.clear(paymentConnections)
         if wasActive then
@@ -815,13 +834,67 @@ autoController = (function()
         return math.floor(value * 100 + 0.5)
     end
 
+    local function inputBlocked()
+        return not state.windowFocused or UIS:GetFocusedTextBox() ~= nil or GuiService.MenuIsOpen
+    end
+
+    local function syncPause()
+        local now = os.clock()
+        if inputBlocked() or now < resumeAt then
+            if not pauseStarted then
+                pauseStarted = now
+                interruptionEpoch = interruptionEpoch + 1
+                if releaseHeldClick then releaseHeldClick() end
+            end
+        elseif pauseStarted then
+            pausedTotal = pausedTotal + now - pauseStarted
+            pauseStarted = nil
+        end
+    end
+
+    local function inputChanged()
+        if not inputBlocked() then resumeAt = os.clock() + 0.25 end
+        syncPause()
+    end
+    connect(UIS.TextBoxFocused, inputChanged)
+    connect(UIS.TextBoxFocusReleased, inputChanged)
+    connect(GuiService:GetPropertyChangedSignal("MenuIsOpen"), inputChanged)
+
+    -- Timeouts count only time available to interact with the game.
+    local function activeClock()
+        syncPause()
+        local now = os.clock()
+        return now - pausedTotal - (pauseStarted and (now - pauseStarted) or 0)
+    end
+
     local function check(token)
-        if not active or generation ~= token or not state.alive then error("EXECUCAO_CANCELADA", 0) end
-        if UIS:GetFocusedTextBox() or GuiService.MenuIsOpen then error("Feche o chat ou menu do Roblox para continuar.", 0) end
+        local epoch = interruptionEpoch
+        local waited = false
+        while true do
+            if not active or generation ~= token or not state.alive then error("EXECUCAO_CANCELADA", 0) end
+            syncPause()
+            if not pauseStarted then break end
+            if not waited then
+                report("Pausado: volte ao Roblox e feche o chat/menu para retomar.")
+                waited = true
+            end
+            task.wait(0.05)
+        end
         if not shown(at(paymentGui, "Leave")) then error("O jogador saiu do caixa.", 0) end
         if not desk or not desk.Parent or not detector or not detector.Parent then error("Caixa removido.", 0) end
         local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
         if not root or (root.Position - detector.Position).Magnitude > 16 then error("Jogador distante do caixa selecionado.", 0) end
+        if waited then
+            lastManualClick = os.clock()
+            table.clear(pendingScans)
+            scanMisses = 0
+            report("Foco recuperado; retomando atendimento.")
+        end
+        -- An interrupted edit is cleared and rebuilt, including an ambiguous cash click.
+        -- Once OK was sent, never blindly repeat a purchase confirmation.
+        if paymentAttempt and paymentAttempt.token == token and not paymentAttempt.confirmSent
+            and paymentAttempt.epoch ~= interruptionEpoch then error(RETRY_PAYMENT, 0) end
+        return waited or epoch ~= interruptionEpoch
     end
 
     local function sendButton(position, down)
@@ -832,8 +905,17 @@ autoController = (function()
         end
     end
 
+    releaseHeldClick = function(expected)
+        if heldClick and (not expected or heldClick == expected) then
+            local position = heldClick.position
+            heldClick = nil
+            pcall(sendButton, position, false)
+        end
+    end
+
     local function mouseIdle()
-        return not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
+        return not inputBlocked() and os.clock() >= resumeAt
+            and not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
             and os.clock() - lastManualClick >= 0.6
     end
 
@@ -858,9 +940,9 @@ autoController = (function()
     -- Small reduction from the 0.6s gap that worked in the user's latest test.
     local CASH_CLICK = { hold = 0.06, gap = 0.5 }
 
-    local function press(position, token, timing)
+    local function press(position, token, timing, beforeDown)
         timing = timing or FAST_CLICK
-        check(token)
+        if check(token) then return false end
         if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
             return false -- A manual press won the race: yield without disabling the cashier.
         end
@@ -870,29 +952,35 @@ autoController = (function()
             or position.Y > viewport.Y - 2 then error("Controle fora da área clicável da tela.", 0) end
         injectingMouse = true
         syntheticReleaseSeen = false
+        local clickHandle = { position = position }
         local ok, reason = pcall(function()
             if driverKind == "VirtualInput" then driver:SendMousePosition(position)
             else driver:SendMouseMoveEvent(position.X, position.Y, game) end
+            heldClick = clickHandle
+            if beforeDown then beforeDown() end
             sendButton(position, true)
             task.wait(timing.hold)
-            syntheticReleaseSeen = false
-            sendButton(position, false)
+            if heldClick == clickHandle then
+                syntheticReleaseSeen = false
+                heldClick = nil
+                sendButton(position, false)
+            end
             -- InputEnded can arrive on a later frame. Keep it inside the synthetic
             -- click window so our own release does not restart the manual idle delay.
             local releaseDeadline = os.clock() + 0.12
             while not syntheticReleaseSeen and os.clock() < releaseDeadline do task.wait() end
         end)
         if not ok then
-            pcall(function() sendButton(position, false) end)
-            injectingMouse = false
+            releaseHeldClick(clickHandle)
+            if generation == token then injectingMouse = false end
             error("Entrada virtual recusada: " .. tostring(reason), 0)
         end
-        injectingMouse = false
+        if generation == token then injectingMouse = false end
         check(token)
         return true
     end
 
-    local function click(buttonObject, token, timing)
+    local function click(buttonObject, token, timing, confirmation)
         timing = timing or FAST_CLICK
         while true do
             waitForMouseIdle(token)
@@ -906,23 +994,40 @@ autoController = (function()
                 position = position + inset
             end
             local activated = false
+            local epoch = interruptionEpoch
             local connection = buttonObject.Activated:Connect(function() activated = true end)
-            local ok, result = pcall(press, position, token, timing)
-            local deadline = os.clock() + 0.5
-            while ok and result and active and generation == token and not activated and os.clock() < deadline do task.wait() end
-            connection:Disconnect()
-            if not ok then error(result, 0) end
-            check(token)
-            if result then
-                if not activated then error("Clique não confirmado em " .. buttonObject.Name .. ". Confira se há uma janela sobre o caixa.", 0) end
-                local settleDeadline = os.clock() + timing.gap
+            -- Always disconnect, including cancellation/restart while waiting for focus.
+            local ok, result = pcall(function()
+                local sent = press(position, token, timing, confirmation and function()
+                    if paymentAttempt then paymentAttempt.confirmSent = true end
+                end or nil)
+                if not sent then return false end
+                local deadline = activeClock() + 0.5
+                while not activated and activeClock() < deadline do
+                    check(token)
+                    task.wait()
+                end
+                check(token)
+                if not activated then
+                    local current = paymentAttempt and paymentAttempt.current
+                    local frame = current and at(paymentGui, "PaymentMethod", current.kind == "Cash" and "CashFrame" or "CardFrame")
+                    if confirmation and frame and not shown(frame) then return true end
+                    if confirmation and epoch ~= interruptionEpoch then
+                        error("Confirmação interrompida sem resposta; confira o caixa antes de reativar.", 0)
+                    end
+                    error("Clique não confirmado em " .. buttonObject.Name .. ". Confira se há uma janela sobre o caixa.", 0)
+                end
+                local settleDeadline = activeClock() + timing.gap
                 repeat
                     check(token)
                     task.wait()
-                until os.clock() >= settleDeadline
-                return
-            end
-            -- No synthetic click was sent. Wait and validate the button again.
+                until activeClock() >= settleDeadline
+                return true
+            end)
+            connection:Disconnect()
+            if not ok then error(result, 0) end
+            if result then return end
+            -- No down event was sent: recompute the button position before retrying.
             task.wait(0.05)
         end
     end
@@ -940,16 +1045,17 @@ autoController = (function()
         {1, "CoinImageFrame", "1PennyFrame"},
     }
 
-    local function finishPayment(current, token)
+    local function runPayment(current, token)
         local timing = current.kind == "Cash" and CASH_CLICK or FAST_CLICK
         local frame = at(paymentGui, "PaymentMethod", current.kind == "Cash" and "CashFrame" or "CardFrame")
-        local deadline = os.clock() + 4
-        while not shown(frame) and os.clock() < deadline do check(token); task.wait(0.05) end
+        local deadline = activeClock() + 4
+        while not shown(frame) and activeClock() < deadline do check(token); task.wait(0.05) end
         if not shown(frame) then error("Interface de pagamento não abriu.", 0) end
         check(token)
         if transaction ~= current then error("O pagamento mudou durante o atendimento.", 0) end
 
         -- A clear click establishes a fresh keypad/change selection before entering values.
+        paymentAttempt.editStarted = true
         click(at(frame, "OperationFrame", "ClearBtn"), token, timing)
         if current.kind == "Card" then
             local valueLabel = at(frame, "TotalFrame", "NumberText")
@@ -982,13 +1088,32 @@ autoController = (function()
         end
         check(token)
         if transaction ~= current or not shown(frame) then error("Pagamento mudou antes da confirmação.", 0) end
-        click(at(frame, "OperationFrame", "OKBtn"), token, timing)
-        deadline = os.clock() + 4
-        while shown(frame) and os.clock() < deadline do check(token); task.wait(0.1) end
+        click(at(frame, "OperationFrame", "OKBtn"), token, timing, true)
+        deadline = activeClock() + 4
+        while shown(frame) and activeClock() < deadline do check(token); task.wait(0.1) end
         if shown(frame) then error("A interface não encerrou o pagamento. Confira o caixa manualmente.", 0) end
         if transaction == current then transaction = nil end
         report("Interface de pagamento fechada; aguardando próximo cliente.")
         task.wait(0.2)
+    end
+
+    local function finishPayment(current, token)
+        while true do
+            check(token)
+            local attempt = { current = current, token = token, epoch = interruptionEpoch, confirmSent = false }
+            paymentAttempt = attempt
+            local ok, reason = pcall(runPayment, current, token)
+            if paymentAttempt == attempt then paymentAttempt = nil end
+            if ok then return end
+            if reason ~= RETRY_PAYMENT then error(reason, 0) end
+            check(token)
+            local frame = at(paymentGui, "PaymentMethod", current.kind == "Cash" and "CashFrame" or "CardFrame")
+            if transaction ~= current or (attempt.editStarted and not shown(frame)) then
+                error("O pagamento mudou durante a pausa. Confira o caixa.", 0)
+            end
+            report("Retomando: limpando e preenchendo o pagamento novamente.")
+            -- runPayment starts with ClearBtn; never append to an uncertain partial change.
+        end
     end
 
     local mouse = player:GetMouse()
@@ -1056,11 +1181,12 @@ autoController = (function()
             if onScreen and point.Z > 0 and point.X > 2 and point.Y > 60
                 and point.X < size.X - 2 and point.Y < size.Y - 2 then
                 local position = Vector2.new(point.X, point.Y)
+                local hoverEpoch = interruptionEpoch
                 movePointer(position)
                 -- Let the game update Mouse.Target and hover handlers before pressing.
                 task.wait(isProductDetector and 0.025 or 0.08)
-                check(token)
-                if transaction or not mouseIdle() then return false end
+                if check(token) then return false end
+                if hoverEpoch ~= interruptionEpoch or transaction or not mouseIdle() then return false end
                 local target = mouse.Target
                 if target == part or (target and allowedModel and target:IsDescendantOf(allowedModel)) then
                     -- Reserve before press: the server can answer while press yields.
@@ -1264,7 +1390,7 @@ autoController = (function()
     connect(UIS.InputBegan, function(input)
         if input.KeyCode == Enum.KeyCode.F8 and active then stop("Atendimento interrompido por F8.") end
     end)
-    return { stop = stop, running = function() return active end }
+    return { stop = stop, running = function() return active end, inputChanged = inputChanged }
 end)()
 
 
@@ -1286,4 +1412,4 @@ refreshSpeed()
 refreshKey()
 resize()
 task.defer(function() if state.alive then resize() end end)
-print("[Zyon] Menu v1.15 loaded. ENG/PORT language toggle. F8 stops automatic checkout.")
+print("[Zyon] Menu v1.16 loaded. Chat/focus auto-pause and resume. F8 stops automatic checkout.")
