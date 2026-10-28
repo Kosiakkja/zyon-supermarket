@@ -1,5 +1,5 @@
 -- Luau | supermarket_menu.lua | Roblox client | PC/keyboard + mouse/touch UI
--- Menu v1.18: alvos mobile, limites de tela e gravador local do caixa (120 segundos).
+-- Menu v1.19: alvos mobile, limites de tela e gravador local automatico do caixa (ultimos 350 registros).
 -- Sem bibliotecas externas; nao envia RemoteEvents ou RemoteFunctions.
 
 local Players = game:GetService("Players")
@@ -40,6 +40,7 @@ local notice, refreshSpeed, refreshKey
 local autoController
 local traceEnabled, traceGeneration = false, 0
 local traceLines, traceConnections = {}, {}
+local traceGuiConnections = {}
 local function trace(kind, message)
     if not traceEnabled then return end
     if #traceLines >= 350 then table.remove(traceLines, 1) end
@@ -64,7 +65,7 @@ local englishText = {
     ["Texto selecionado. Use Copiar ou Ctrl+C."] = "Text selected. Use Copy or Ctrl+C.",
     ["Gravar caixa · OFF"] = "Record checkout · OFF",
     ["Gravar caixa · ON"] = "Record checkout · ON",
-    ["Gravação local por 120s. Reproduza o erro e gere o diagnóstico."] = "Recording locally for 120s. Reproduce the issue, then run diagnostics.",
+    ["Gravação automática ligada. Reproduza o erro e gere o diagnóstico."] = "Automatic recording is on. Reproduce the issue, then run diagnostics.",
     ["Gravação encerrada. Gere o diagnóstico para copiar o registro."] = "Recording stopped. Run diagnostics to copy the log.",
     ["PAUSADO · CHAT/MENU"] = "PAUSED · CHAT/MENU",
     ["Execução em segundo plano"] = "Background operation",
@@ -73,7 +74,7 @@ local englishText = {
     ["EM EXECUÇÃO · SEM FOCO"] = "RUNNING · ROBLOX UNFOCUSED",
     ["PAUSADO · ENTRADA SEM FOCO RECUSADA"] = "PAUSED · UNFOCUSED INPUT NOT ACCEPTED",
     ["PAUSADO · SEGUNDO PLANO DESLIGADO"] = "PAUSED · BACKGROUND DISABLED",
-    ["Configuração na aba Tecla e menu. Versão 1.18."] = "Configure in Key & menu. Version 1.18.",
+    ["Configuração na aba Tecla e menu. Versão 1.19."] = "Configure in Key & menu. Version 1.19.",
     ["Segundo plano: LIG"] = "Background: ON",
     ["Segundo plano: DESL"] = "Background: OFF",
     ["Experimental: depende da entrada virtual sem foco."] = "Experimental: requires virtual input without focus.",
@@ -484,9 +485,9 @@ local autoStatus = label(cashierCard, "DESLIGADO · F8 INTERROMPE", 16, 38, 390,
 label(cashierCard, "Ative no caixa com esteira e mão do NPC visíveis. Produtos e pagamento automáticos. F8 interrompe.", 16, 59, 390, 33, 11, C.muted)
 local backgroundCard = card(integration, 110, 98)
 label(backgroundCard, "Execução em segundo plano", 16, 10, 310, 25, 15)
-label(backgroundCard, "v1.18", 352, 10, 56, 25, 11, C.accent)
+label(backgroundCard, "v1.19", 352, 10, 56, 25, 11, C.accent)
 local backgroundStatus = label(backgroundCard, "ATENDIMENTO DESLIGADO", 16, 38, 390, 18, 10, C.amber)
-local backgroundDetail = label(backgroundCard, "Configuração na aba Tecla e menu. Versão 1.18.", 16, 59, 390, 33, 11, C.muted)
+local backgroundDetail = label(backgroundCard, "Configuração na aba Tecla e menu. Versão 1.19.", 16, 59, 390, 33, 11, C.muted)
 local diagnose = button(integration, "Gerar diagnóstico local", 0, 234, 206, 36)
 local traceToggle = button(integration, "Gravar caixa · OFF", 220, 234, 204, 36)
 
@@ -567,23 +568,19 @@ local function stopTrace()
     traceGeneration = traceGeneration + 1
     for _, connection in ipairs(traceConnections) do connection:Disconnect() end
     table.clear(traceConnections)
+    for _, connection in ipairs(traceGuiConnections) do connection:Disconnect() end
+    table.clear(traceGuiConnections)
     if state.alive then setText(traceToggle, "Gravar caixa · OFF") end
 end
-connect(traceToggle.Activated, function()
-    if traceEnabled then
-        stopTrace()
-        notice("Gravação encerrada. Gere o diagnóstico para copiar o registro.")
-        return
-    end
-    local payment = playerGui:FindFirstChild("PaymentGui")
-    if not payment then notice("Assuma o caixa antes de ativar."); return end
+local function startTrace()
+    if traceEnabled then return end
+    local payment
     table.clear(traceLines)
     traceEnabled = true
     traceGeneration = traceGeneration + 1
-    local token = traceGeneration
     setText(traceToggle, "Gravar caixa · ON")
     local camera = workspace.CurrentCamera
-    trace("START v1.18", "touch=" .. tostring(UIS.TouchEnabled) .. " mouse=" .. tostring(UIS.MouseEnabled)
+    trace("START v1.19", "touch=" .. tostring(UIS.TouchEnabled) .. " mouse=" .. tostring(UIS.MouseEnabled)
         .. " viewport=" .. tostring(camera and camera.ViewportSize))
     local watched, nodes = {}, 0
     local function watch(object)
@@ -593,12 +590,12 @@ connect(traceToggle.Activated, function()
         trace("GUI", tracePath(object) .. " visible=" .. tostring(object.Visible)
             .. " pos=" .. tostring(object.AbsolutePosition) .. " size=" .. tostring(object.AbsoluteSize))
         if object:IsA("GuiButton") then
-            table.insert(traceConnections, object.Activated:Connect(function(input)
+            table.insert(traceGuiConnections, object.Activated:Connect(function(input)
                 trace("ACTIVATED", tracePath(object) .. " input=" .. tostring(input and input.UserInputType))
             end))
         end
         if object.Name == "CashFrame" or object.Name == "CardFrame" then
-            table.insert(traceConnections, object:GetPropertyChangedSignal("Visible"):Connect(function()
+            table.insert(traceGuiConnections, object:GetPropertyChangedSignal("Visible"):Connect(function()
                 trace("VISIBLE", tracePath(object) .. "=" .. tostring(object.Visible))
             end))
         end
@@ -608,11 +605,22 @@ connect(traceToggle.Activated, function()
                 if object.Text:find("%d") then trace("VALUE", tracePath(object) .. "=" .. object.Text:sub(1, 100)) end
             end
             recordValue()
-            table.insert(traceConnections, object:GetPropertyChangedSignal("Text"):Connect(recordValue))
+            table.insert(traceGuiConnections, object:GetPropertyChangedSignal("Text"):Connect(recordValue))
         end
     end
-    for _, object in ipairs(payment:GetDescendants()) do watch(object) end
-    table.insert(traceConnections, payment.DescendantAdded:Connect(watch))
+    local function bindPayment(root)
+        if root.Name ~= "PaymentGui" or root == payment then return end
+        for _, connection in ipairs(traceGuiConnections) do connection:Disconnect() end
+        table.clear(traceGuiConnections)
+        watched, nodes = {}, 0
+        payment = root
+        trace("PAYMENT_GUI", "attached")
+        table.insert(traceGuiConnections, payment.DescendantAdded:Connect(watch))
+        for _, object in ipairs(payment:GetDescendants()) do watch(object) end
+    end
+    table.insert(traceConnections, playerGui.ChildAdded:Connect(bindPayment))
+    local existing = playerGui:FindFirstChild("PaymentGui")
+    if existing then bindPayment(existing) end
     local lastMove = 0
     local function recordInput(input, phase)
         local kind = input.UserInputType
@@ -625,7 +633,7 @@ connect(traceToggle.Activated, function()
         end
         local pos = input.Position
         for _, object in ipairs(playerGui:GetGuiObjectsAtPosition(pos.X, pos.Y)) do
-            if object:IsDescendantOf(payment) then
+            if payment and object:IsDescendantOf(payment) then
                 trace(phase, tostring(kind) .. " xy=" .. tostring(pos) .. " gui=" .. tracePath(object))
                 return
             end
@@ -643,13 +651,15 @@ connect(traceToggle.Activated, function()
     table.insert(traceConnections, UIS.InputBegan:Connect(function(input) recordInput(input, "DOWN") end))
     table.insert(traceConnections, UIS.InputEnded:Connect(function(input) recordInput(input, "UP") end))
     table.insert(traceConnections, UIS.InputChanged:Connect(function(input) recordInput(input, "MOVE") end))
-    notice("Gravação local por 120s. Reproduza o erro e gere o diagnóstico.")
-    task.delay(120, function()
-        if token == traceGeneration then
-            stopTrace()
-            if state.alive then notice("Gravação encerrada. Gere o diagnóstico para copiar o registro.") end
-        end
-    end)
+    notice("Gravação automática ligada. Reproduza o erro e gere o diagnóstico.")
+end
+connect(traceToggle.Activated, function()
+    if traceEnabled then
+        stopTrace()
+        notice("Gravação encerrada. Gere o diagnóstico para copiar o registro.")
+    else
+        startTrace()
+    end
 end)
 
 local function collectDiagnostic()
@@ -660,7 +670,7 @@ local function collectDiagnostic()
         "Só nomes e textos replicados; nenhum evento foi disparado.",
         "--- Eventos em ReplicatedStorage (máximo 250) ---",
     }
-    table.insert(lines, "--- CHECKOUT TRACE v1.18 (ultimos 350 registros, local) ---")
+    table.insert(lines, "--- CHECKOUT TRACE v1.19 (ultimos 350 registros, local) ---")
     for _, line in ipairs(traceLines) do table.insert(lines, line) end
     table.insert(lines, "--- FIM CHECKOUT TRACE ---")
     local remoteLines = {}
@@ -1028,7 +1038,7 @@ autoController = (function()
         syncPause()
         paint()
         if active then
-            print(string.format("[ZyonFocus] v1.18 focus=%s background=%s driver=%s attempts=%d scans=%d blocked=%s",
+            print(string.format("[ZyonFocus] v1.19 focus=%s background=%s driver=%s attempts=%d scans=%d blocked=%s",
                 tostring(state.windowFocused), tostring(state.backgroundEnabled), tostring(driverKind),
                 backgroundAttempts, backgroundScans, tostring(backgroundBlocked)))
         end
@@ -1677,4 +1687,7 @@ refreshSpeed()
 refreshKey()
 resize()
 task.defer(function() if state.alive then resize() end end)
-print("[Zyon] Menu v1.18 loaded. Background ON (experimental). F8 stops. Auto Stock removed.")
+print("[Zyon] Menu v1.19 loaded. Background ON (experimental). F8 stops. Auto Stock removed.")
+
+-- Bounded local recording starts on execution, even before PaymentGui exists.
+startTrace()
