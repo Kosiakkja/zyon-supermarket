@@ -1,5 +1,5 @@
 -- Luau | supermarket_menu.lua | Roblox client | PC/keyboard + mouse/touch UI
--- Menu v1.17: atendimento em segundo plano opcional, indicadores de foco e respostas; Auto Stock retirado.
+-- Menu v1.18: alvos mobile, limites de tela e gravador local do caixa (120 segundos).
 -- Sem bibliotecas externas; nao envia RemoteEvents ou RemoteFunctions.
 
 local Players = game:GetService("Players")
@@ -38,10 +38,34 @@ local connections = {}
 local characterConnection
 local notice, refreshSpeed, refreshKey
 local autoController
+local traceEnabled, traceGeneration = false, 0
+local traceLines, traceConnections = {}, {}
+local function trace(kind, message)
+    if not traceEnabled then return end
+    if #traceLines >= 350 then table.remove(traceLines, 1) end
+    table.insert(traceLines, string.format("[CheckoutTrace] %.3f %s | %s",
+        os.clock(), kind, tostring(message):gsub("[\r\n]", " "):sub(1, 700)))
+end
+local function tracePath(object)
+    if not object then return "nil" end
+    local names = {}
+    while object and object ~= playerGui and object ~= workspace do
+        table.insert(names, 1, object.Name)
+        object = object.Parent
+    end
+    return table.concat(names, ".")
+end
 
 -- UI text keeps its Portuguese source so existing messages can be retranslated.
 -- Game object names, payment events and numeric values are never localized.
 local englishText = {
+    ["Selecione o texto e use Copiar (celular) ou Ctrl+C (PC)."] = "Select text, then Copy (mobile) or Ctrl+C (PC).",
+    ["Use Copiar ou Ctrl+C."] = "Use Copy or Ctrl+C.",
+    ["Texto selecionado. Use Copiar ou Ctrl+C."] = "Text selected. Use Copy or Ctrl+C.",
+    ["Gravar caixa · OFF"] = "Record checkout · OFF",
+    ["Gravar caixa · ON"] = "Record checkout · ON",
+    ["Gravação local por 120s. Reproduza o erro e gere o diagnóstico."] = "Recording locally for 120s. Reproduce the issue, then run diagnostics.",
+    ["Gravação encerrada. Gere o diagnóstico para copiar o registro."] = "Recording stopped. Run diagnostics to copy the log.",
     ["PAUSADO · CHAT/MENU"] = "PAUSED · CHAT/MENU",
     ["Execução em segundo plano"] = "Background operation",
     ["ATENDIMENTO DESLIGADO"] = "CHECKOUT OFF",
@@ -49,7 +73,7 @@ local englishText = {
     ["EM EXECUÇÃO · SEM FOCO"] = "RUNNING · ROBLOX UNFOCUSED",
     ["PAUSADO · ENTRADA SEM FOCO RECUSADA"] = "PAUSED · UNFOCUSED INPUT NOT ACCEPTED",
     ["PAUSADO · SEGUNDO PLANO DESLIGADO"] = "PAUSED · BACKGROUND DISABLED",
-    ["Configuração na aba Tecla e menu. Versão 1.17."] = "Configure in Key & menu. Version 1.17.",
+    ["Configuração na aba Tecla e menu. Versão 1.18."] = "Configure in Key & menu. Version 1.18.",
     ["Segundo plano: LIG"] = "Background: ON",
     ["Segundo plano: DESL"] = "Background: OFF",
     ["Experimental: depende da entrada virtual sem foco."] = "Experimental: requires virtual input without focus.",
@@ -96,11 +120,11 @@ local englishText = {
     ["Abra o caixa antes. O relatório abre neste painel."] = "Open checkout first. The report opens in this panel.",
     ["Relatório do caixa"] = "Checkout report",
     ["Voltar"] = "Back",
-    ["Selecione o texto, copie com Ctrl+C e cole no chat."] = "Select the text, copy with Ctrl+C and paste in chat.",
+    ["Selecione o texto e use Copiar (celular) ou Ctrl+C (PC)."] = "Select the text, copy with Ctrl+C and paste in chat.",
     ["Selecionar tudo"] = "Select all",
-    ["Depois pressione Ctrl+C."] = "Then press Ctrl+C.",
+    ["Use Copiar ou Ctrl+C."] = "Then press Ctrl+C.",
     ["Relatório aberto. Selecione, copie e envie no chat."] = "Report opened. Select, copy and send in chat.",
-    ["Texto selecionado. Pressione Ctrl+C para copiar."] = "Text selected. Press Ctrl+C to copy.",
+    ["Texto selecionado. Use Copiar ou Ctrl+C."] = "Text selected. Press Ctrl+C to copy.",
     ["Relatório fechado. Gere novamente para atualizar os dados."] = "Report closed. Run again to refresh the data.",
     ["Só nomes e textos replicados; nenhum evento foi disparado."] = "Replicated names and text only; no event was fired.",
     ["--- Eventos em ReplicatedStorage (máximo 250) ---"] = "--- Events in ReplicatedStorage (up to 250) ---",
@@ -460,11 +484,11 @@ local autoStatus = label(cashierCard, "DESLIGADO · F8 INTERROMPE", 16, 38, 390,
 label(cashierCard, "Ative no caixa com esteira e mão do NPC visíveis. Produtos e pagamento automáticos. F8 interrompe.", 16, 59, 390, 33, 11, C.muted)
 local backgroundCard = card(integration, 110, 98)
 label(backgroundCard, "Execução em segundo plano", 16, 10, 310, 25, 15)
-label(backgroundCard, "v1.17", 352, 10, 56, 25, 11, C.accent)
+label(backgroundCard, "v1.18", 352, 10, 56, 25, 11, C.accent)
 local backgroundStatus = label(backgroundCard, "ATENDIMENTO DESLIGADO", 16, 38, 390, 18, 10, C.amber)
-local backgroundDetail = label(backgroundCard, "Configuração na aba Tecla e menu. Versão 1.17.", 16, 59, 390, 33, 11, C.muted)
+local backgroundDetail = label(backgroundCard, "Configuração na aba Tecla e menu. Versão 1.18.", 16, 59, 390, 33, 11, C.muted)
 local diagnose = button(integration, "Gerar diagnóstico local", 0, 234, 206, 36)
-label(integration, "Abra o caixa antes. O relatório abre neste painel.", 220, 231, 204, 42, 11, C.muted)
+local traceToggle = button(integration, "Gravar caixa · OFF", 220, 234, 204, 36)
 
 local reportPanel = new("Frame", {
     Name = "DiagnosticReport", Position = UDim2.fromOffset(20, 80),
@@ -473,7 +497,7 @@ local reportPanel = new("Frame", {
 }, panel)
 label(reportPanel, "Relatório do caixa", 0, 0, 288, 28, 16)
 local closeReport = button(reportPanel, "Voltar", 336, 0, 88, 30)
-label(reportPanel, "Selecione o texto, copie com Ctrl+C e cole no chat.", 0, 35, 424, 24, 11, C.muted)
+label(reportPanel, "Selecione o texto e use Copiar (celular) ou Ctrl+C (PC).", 0, 35, 424, 24, 11, C.muted)
 local reportScroll = new("ScrollingFrame", {
     Position = UDim2.fromOffset(0, 68), Size = UDim2.fromOffset(424, 212),
     BackgroundColor3 = C.card, BorderSizePixel = 0,
@@ -493,7 +517,7 @@ local reportText = new("TextBox", {
 }, reportScroll)
 local selectReport = button(reportPanel, "Selecionar tudo", 0, 294, 206, 36, C.accent)
 selectReport.TextColor3 = C.dark
-label(reportPanel, "Depois pressione Ctrl+C.", 220, 291, 204, 42, 11, C.muted)
+label(reportPanel, "Use Copiar ou Ctrl+C.", 220, 291, 204, 42, 11, C.muted)
 local lastReport = ""
 local function renderReport()
     local rendered = {}
@@ -522,7 +546,7 @@ connect(selectReport.Activated, function()
         if state.alive and state.reportOpen and reportText:IsFocused() then
             reportText.CursorPosition = #reportText.Text + 1
             reportText.SelectionStart = 1
-            notice("Texto selecionado. Pressione Ctrl+C para copiar.")
+            notice("Texto selecionado. Use Copiar ou Ctrl+C.")
         end
     end)
 end)
@@ -537,6 +561,97 @@ connect(closeReport.Activated, function()
     notice("Relatório fechado. Gere novamente para atualizar os dados.")
 end)
 
+local function stopTrace()
+    trace("END", "recording stopped")
+    traceEnabled = false
+    traceGeneration = traceGeneration + 1
+    for _, connection in ipairs(traceConnections) do connection:Disconnect() end
+    table.clear(traceConnections)
+    if state.alive then setText(traceToggle, "Gravar caixa · OFF") end
+end
+connect(traceToggle.Activated, function()
+    if traceEnabled then
+        stopTrace()
+        notice("Gravação encerrada. Gere o diagnóstico para copiar o registro.")
+        return
+    end
+    local payment = playerGui:FindFirstChild("PaymentGui")
+    if not payment then notice("Assuma o caixa antes de ativar."); return end
+    table.clear(traceLines)
+    traceEnabled = true
+    traceGeneration = traceGeneration + 1
+    local token = traceGeneration
+    setText(traceToggle, "Gravar caixa · ON")
+    local camera = workspace.CurrentCamera
+    trace("START v1.18", "touch=" .. tostring(UIS.TouchEnabled) .. " mouse=" .. tostring(UIS.MouseEnabled)
+        .. " viewport=" .. tostring(camera and camera.ViewportSize))
+    local watched, nodes = {}, 0
+    local function watch(object)
+        if watched[object] or nodes >= 150 or not object:IsA("GuiObject") then return end
+        watched[object] = true
+        nodes = nodes + 1
+        trace("GUI", tracePath(object) .. " visible=" .. tostring(object.Visible)
+            .. " pos=" .. tostring(object.AbsolutePosition) .. " size=" .. tostring(object.AbsoluteSize))
+        if object:IsA("GuiButton") then
+            table.insert(traceConnections, object.Activated:Connect(function(input)
+                trace("ACTIVATED", tracePath(object) .. " input=" .. tostring(input and input.UserInputType))
+            end))
+        end
+        if object.Name == "CashFrame" or object.Name == "CardFrame" then
+            table.insert(traceConnections, object:GetPropertyChangedSignal("Visible"):Connect(function()
+                trace("VISIBLE", tracePath(object) .. "=" .. tostring(object.Visible))
+            end))
+        end
+        if object:IsA("TextLabel") or object:IsA("TextButton") then
+            local function recordValue()
+                -- Only numeric checkout display values; never typed text/chat.
+                if object.Text:find("%d") then trace("VALUE", tracePath(object) .. "=" .. object.Text:sub(1, 100)) end
+            end
+            recordValue()
+            table.insert(traceConnections, object:GetPropertyChangedSignal("Text"):Connect(recordValue))
+        end
+    end
+    for _, object in ipairs(payment:GetDescendants()) do watch(object) end
+    table.insert(traceConnections, payment.DescendantAdded:Connect(watch))
+    local lastMove = 0
+    local function recordInput(input, phase)
+        local kind = input.UserInputType
+        if kind ~= Enum.UserInputType.Touch and kind ~= Enum.UserInputType.MouseButton1
+            and kind ~= Enum.UserInputType.MouseMovement then return end
+        if UIS:GetFocusedTextBox() then return end
+        if phase == "MOVE" then
+            if os.clock() - lastMove < 0.3 then return end
+            lastMove = os.clock()
+        end
+        local pos = input.Position
+        for _, object in ipairs(playerGui:GetGuiObjectsAtPosition(pos.X, pos.Y)) do
+            if object:IsDescendantOf(payment) then
+                trace(phase, tostring(kind) .. " xy=" .. tostring(pos) .. " gui=" .. tracePath(object))
+                return
+            end
+        end
+        if phase == "MOVE" then return end
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        local ray = cam:ViewportPointToRay(pos.X, pos.Y)
+        local hit = workspace:Raycast(ray.Origin, ray.Direction * 50)
+        local target = hit and hit.Instance
+        if target and (target:FindFirstAncestor("CashModel") or target:FindFirstAncestor("CardModel")) then
+            trace(phase, tostring(kind) .. " xy=" .. tostring(pos) .. " offer=" .. target.Name)
+        end
+    end
+    table.insert(traceConnections, UIS.InputBegan:Connect(function(input) recordInput(input, "DOWN") end))
+    table.insert(traceConnections, UIS.InputEnded:Connect(function(input) recordInput(input, "UP") end))
+    table.insert(traceConnections, UIS.InputChanged:Connect(function(input) recordInput(input, "MOVE") end))
+    notice("Gravação local por 120s. Reproduza o erro e gere o diagnóstico.")
+    task.delay(120, function()
+        if token == traceGeneration then
+            stopTrace()
+            if state.alive then notice("Gravação encerrada. Gere o diagnóstico para copiar o registro.") end
+        end
+    end)
+end)
+
 local function collectDiagnostic()
     local lines = {
         "Diagnóstico local v1.1 — " .. os.date("!%Y-%m-%dT%H:%M:%SZ"),
@@ -545,6 +660,9 @@ local function collectDiagnostic()
         "Só nomes e textos replicados; nenhum evento foi disparado.",
         "--- Eventos em ReplicatedStorage (máximo 250) ---",
     }
+    table.insert(lines, "--- CHECKOUT TRACE v1.18 (ultimos 350 registros, local) ---")
+    for _, line in ipairs(traceLines) do table.insert(lines, line) end
+    table.insert(lines, "--- FIM CHECKOUT TRACE ---")
     local remoteLines = {}
     for _, object in ipairs(ReplicatedStorage:GetDescendants()) do
         if object:IsA("RemoteEvent") or object:IsA("RemoteFunction")
@@ -763,6 +881,7 @@ connect(screen:GetPropertyChangedSignal("AbsoluteSize"), resize)
 connect(gui.Destroying, function()
     if not state.alive then return end
     if autoController then autoController.stop("Menu encerrado.", false) end
+    stopTrace()
     state.alive = false
     restoreSpeed()
     if characterConnection then characterConnection:Disconnect() end
@@ -790,6 +909,7 @@ autoController = (function()
     local lastStatus
     local lastManualClick = -math.huge
     local injectingMouse = false
+    local manualTouches = {}
     local syntheticReleaseSeen = false
     local heldClick
     local releaseHeldClick
@@ -802,7 +922,13 @@ autoController = (function()
     local backgroundAttempts, backgroundScans = 0, 0
     local RETRY_PAYMENT = {} -- Private sentinel, never an ordinary game/executor error.
     local function observeManualClick(input, released)
-        if not active or input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+        if not active then return end
+        if input.UserInputType == Enum.UserInputType.Touch then
+            manualTouches[input] = not released and true or nil
+            lastManualClick = os.clock()
+            return
+        end
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
         if injectingMouse then
             if released then syntheticReleaseSeen = true end
             return
@@ -816,6 +942,7 @@ autoController = (function()
         if lastStatus == message then return end
         lastStatus = message
         if state.alive then setText(autoStatus, message); notice(message) end
+        trace("STATUS", message)
         print("[ZyonAuto] " .. translate(message))
     end
 
@@ -840,6 +967,7 @@ autoController = (function()
         active = false
         generation = generation + 1
         transaction = nil
+        table.clear(manualTouches)
         table.clear(pendingScans)
         if releaseHeldClick then releaseHeldClick() end
         for _, connection in ipairs(paymentConnections) do connection:Disconnect() end
@@ -900,7 +1028,7 @@ autoController = (function()
         syncPause()
         paint()
         if active then
-            print(string.format("[ZyonFocus] v1.17 focus=%s background=%s driver=%s attempts=%d scans=%d blocked=%s",
+            print(string.format("[ZyonFocus] v1.18 focus=%s background=%s driver=%s attempts=%d scans=%d blocked=%s",
                 tostring(state.windowFocused), tostring(state.backgroundEnabled), tostring(driverKind),
                 backgroundAttempts, backgroundScans, tostring(backgroundBlocked)))
         end
@@ -968,7 +1096,7 @@ autoController = (function()
     end
 
     local function mouseIdle()
-        return not inputBlocked() and os.clock() >= resumeAt
+        return next(manualTouches) == nil and not inputBlocked() and os.clock() >= resumeAt
             and (not state.windowFocused or (not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1)
                 and os.clock() - lastManualClick >= 0.6))
     end
@@ -1002,8 +1130,10 @@ autoController = (function()
         end
         local camera = workspace.CurrentCamera
         local viewport = camera and camera.ViewportSize
-        if not viewport or position.X < 2 or position.Y < 60 or position.X > viewport.X - 2
+        if not viewport or position.X < 2 or position.Y < 2 or position.X > viewport.X - 2
             or position.Y > viewport.Y - 2 then error("Controle fora da área clicável da tela.", 0) end
+        if next(manualTouches) then return false end
+        if paymentAttempt then trace("PRESS", "xy=" .. tostring(position) .. " driver=" .. tostring(driverKind)) end
         injectingMouse = true
         syntheticReleaseSeen = false
         local clickHandle = { position = position }
@@ -1054,6 +1184,19 @@ autoController = (function()
                 local inset = GuiService:GetGuiInset()
                 position = position + inset
             end
+            local function hitsButton(point)
+                local ok, objects = pcall(function() return playerGui:GetGuiObjectsAtPosition(point.X, point.Y) end)
+                if not ok then return false end
+                for _, object in ipairs(objects) do
+                    if object == buttonObject or object:IsDescendantOf(buttonObject) then return true end
+                    if object:IsA("GuiButton") and object.Active then return false end
+                end
+                return false
+            end
+            local center = buttonObject.AbsolutePosition + buttonObject.AbsoluteSize / 2
+            if UIS.TouchEnabled and not hitsButton(position) and hitsButton(center) then position = center end
+            trace("BUTTON", tracePath(buttonObject) .. " xy=" .. tostring(position)
+                .. " size=" .. tostring(buttonObject.AbsoluteSize) .. " hit=" .. tostring(hitsButton(position)))
             local activated = false
             local epoch = interruptionEpoch
             local connection = buttonObject.Activated:Connect(function() activated = true end)
@@ -1092,6 +1235,7 @@ autoController = (function()
                 return true
             end)
             connection:Disconnect()
+            trace("BUTTON_RESULT", buttonObject.Name .. " activated=" .. tostring(activated) .. " ok=" .. tostring(ok) .. " result=" .. tostring(result))
             if not ok then error(result, 0) end
             if result then return end
             -- No down event was sent: recompute the button position before retrying.
@@ -1111,6 +1255,26 @@ autoController = (function()
         {5, "CoinImageFrame", "5PennyFrame"},
         {1, "CoinImageFrame", "1PennyFrame"},
     }
+
+    local function cashButton(frame, denomination)
+        local container = at(frame, denomination[2], denomination[3])
+        if not container or not shown(container) then
+            container = nil
+            for _, object in ipairs(frame:GetDescendants()) do
+                if object.Name == denomination[3] and shown(object) then container = object; break end
+            end
+        end
+        if container and container:IsA("GuiButton") and shown(container) then return container end
+        if container then
+            local exact = container:FindFirstChild("ImageButton")
+            if exact and exact:IsA("GuiButton") and shown(exact) and exact.Active then return exact end
+            for _, object in ipairs(container:GetDescendants()) do
+                if object:IsA("GuiButton") and shown(object) and object.Active then return object end
+            end
+        end
+        trace("MISSING_CASH_BUTTON", denomination[3])
+        return nil
+    end
 
     local function runPayment(current, token)
         local timing = current.kind == "Cash" and CASH_CLICK or FAST_CLICK
@@ -1150,7 +1314,8 @@ autoController = (function()
                 current.total / 100, current.paid / 100, change / 100, #plan))
             for _, denomination in ipairs(plan) do
                 if transaction ~= current or not shown(frame) then error("Pagamento alterado durante o troco.", 0) end
-                click(at(frame, denomination[2], denomination[3], "ImageButton"), token, CASH_CLICK)
+                trace("DENOMINATION", "cents=" .. denomination[1])
+                click(cashButton(frame, denomination), token, CASH_CLICK)
             end
         end
         check(token)
@@ -1258,7 +1423,7 @@ autoController = (function()
             local worldPoint = part.CFrame:PointToWorldSpace(part.Size * offset)
             local point, onScreen = camera:WorldToViewportPoint(worldPoint)
             local size = camera.ViewportSize
-            if onScreen and point.Z > 0 and point.X > 2 and point.Y > 60
+            if onScreen and point.Z > 0 and point.X > 2 and point.Y > 2
                 and point.X < size.X - 2 and point.Y < size.Y - 2 then
                 local position = Vector2.new(point.X, point.Y)
                 local hoverEpoch = interruptionEpoch
@@ -1268,6 +1433,17 @@ autoController = (function()
                 if check(token) then return false end
                 if hoverEpoch ~= interruptionEpoch or transaction or not mouseIdle() then return false end
                 local target = mouse.Target
+                if UIS.TouchEnabled and allowedModel then
+                    -- Mobile Mouse.Target can stay at the previous pointer position.
+                    local ray = camera:ViewportPointToRay(position.X, position.Y)
+                    local params = RaycastParams.new()
+                    params.FilterType = Enum.RaycastFilterType.Exclude
+                    params.FilterDescendantsInstances = player.Character and { player.Character } or {}
+                    local hit = workspace:Raycast(ray.Origin, ray.Direction * 50, params)
+                    target = hit and hit.Instance
+                    trace("OFFER_AIM", allowedModel.Name .. " xy=" .. tostring(position)
+                        .. " hit=" .. tostring(target and target.Name))
+                end
                 if target == part or (target and allowedModel and target:IsDescendantOf(allowedModel)) then
                     -- Reserve before press: the server can answer while press yields.
                     local pending
@@ -1406,6 +1582,8 @@ autoController = (function()
         generation = generation + 1
         local token = generation
         active = true
+        table.clear(manualTouches)
+        trace("AUTO_START", "driver=" .. tostring(driverKind))
         backgroundBlocked = false
         backgroundAttempts, backgroundScans = 0, 0
         transaction = nil
@@ -1429,6 +1607,7 @@ autoController = (function()
         end))
         table.insert(paymentConnections, methodEvent.OnClientEvent:Connect(function(kind, total, paid)
             if not active then return end
+            trace("PAYMENT_EVENT", "kind=" .. tostring(kind) .. " total=" .. tostring(total) .. " paid=" .. tostring(paid))
             local totalCents = cents(total)
             local paidCents = kind == "Cash" and cents(paid) or nil
             if (kind ~= "Cash" and kind ~= "Card") or not totalCents
@@ -1498,4 +1677,4 @@ refreshSpeed()
 refreshKey()
 resize()
 task.defer(function() if state.alive then resize() end end)
-print("[Zyon] Menu v1.17 loaded. Background ON (experimental). F8 stops. Auto Stock removed.")
+print("[Zyon] Menu v1.18 loaded. Background ON (experimental). F8 stops. Auto Stock removed.")
